@@ -9,7 +9,8 @@
 // The worker function provided is called with a set of items to
 // process. This is expected to be an async function itself and should
 // not throw.  It should include any retry logic needed (though the
-// exported Retry function can be used to wrap it if needed).
+// exported Retry function can be used to wrap it if needed).  It
+// should return the number of items it actually processed.
 //
 // The storage object provided is called with enqueue each time an item
 // is pushed.  It is also called with dequeue when the worker
@@ -38,10 +39,11 @@ export class Queue {
   
   async _send() {
     while (this.items.length > 0 ) {
-      let count = this.items.length;
-      await this.worker(this.items.slice()); // this must not throw!
-      this.items.splice(0, count);
-      this.storage.dequeue(this.items, count);
+      let count = await this.worker(this.items); // this must not throw!
+      if (count) {
+        this.items.splice(0, count);
+        this.storage.dequeue(this.items, count);
+      }
     }
     this.pending = null;
   }
@@ -62,8 +64,7 @@ export async function Retry(fn, maxCount, initialMilliseconds,  maxMilliseconds,
   let delay = initialMilliseconds;
   for (let count = 0; count < maxCount; count ++) {
     try {
-      await fn(count);
-      return null;
+      return await fn(count);
     } catch(ignored) {
       delay = Math.min(delay, maxMilliseconds);
       let randomized = Math.round(delay * (1 + Math.random() * randomizationFactor));

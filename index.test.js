@@ -10,7 +10,7 @@ import {Queue, Retry, LocalStorage} from "./index.js";
 describe("queue", () => {
   it("enqueues items", async () => {
     let items = [];
-    let worker = tasks => { items = items.concat(tasks) }
+    let worker = tasks => { items = items.concat(tasks); return tasks.length }
     let queue = new Queue(worker, new FakeStore());
 
     queue.push(42);
@@ -20,7 +20,7 @@ describe("queue", () => {
 
   it("enqueues multiple items", async () => {
     let items = [];
-    let worker = tasks => { items = items.concat(tasks) }
+    let worker = tasks => { items = items.concat(tasks); return tasks.length }
     let queue = new Queue(worker, new FakeStore());
 
     queue.push(42);
@@ -31,7 +31,7 @@ describe("queue", () => {
 
   it("enqueues multiple items in sequence", async () => {
     let items = [];
-    let worker = tasks => { items = items.concat(tasks) }
+    let worker = tasks => { items = items.concat(tasks); return tasks.length }
     let queue = new Queue(worker, new FakeStore());
 
     queue.push(42);
