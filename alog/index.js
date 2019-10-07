@@ -37,7 +37,6 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
         if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
     }
 };
-import { Queue } from "jsq";
 // Log provides asynchronous logging with various levels
 //
 // If the constructor is called with a handler, that handler is called
@@ -121,6 +120,51 @@ var Log = /** @class */ (function () {
     return Log;
 }());
 export { Log };
+var Queue = /** @class */ (function () {
+    function Queue(worker, storage) {
+        this.worker = worker;
+        this.pending = null;
+        this.items = [];
+        this.storage = storage;
+    }
+    Queue.prototype.push = function (item) {
+        this.items.push(item);
+        this.storage.enqueue(this.items, item);
+        if (this.pending === null) {
+            this.pending = this._send();
+        }
+    };
+    Queue.prototype.flush = function () {
+        return __awaiter(this, void 0, void 0, function () {
+            return __generator(this, function (_a) {
+                return [2 /*return*/, this.pending];
+            });
+        });
+    };
+    Queue.prototype._send = function () {
+        return __awaiter(this, void 0, void 0, function () {
+            var count;
+            return __generator(this, function (_a) {
+                switch (_a.label) {
+                    case 0:
+                        if (!(this.items.length > 0)) return [3 /*break*/, 2];
+                        return [4 /*yield*/, this.worker(this.items)];
+                    case 1:
+                        count = _a.sent();
+                        if (count) {
+                            this.items.splice(0, count);
+                            this.storage.dequeue(this.items, count);
+                        }
+                        return [3 /*break*/, 0];
+                    case 2:
+                        this.pending = null;
+                        return [2 /*return*/];
+                }
+            });
+        });
+    };
+    return Queue;
+}());
 // retry does binary exponential backoff
 function retry(fn, maxCount, initialMilliseconds, maxMilliseconds, randomizationFactor) {
     var _this = this;

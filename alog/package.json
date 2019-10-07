@@ -26,6 +26,5 @@
     "typescript": "^3.6.3"
   },
   "dependencies": {
-    "jsq": "https://github.com/tvastar/jsq"
   }
 }

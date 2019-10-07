@@ -8,7 +8,7 @@ let {expect} = require("chai");
 import {Log} from "./index.js";
 
 describe("log", () => {
-  it("writes logs and buffers debug", async () => {
+ it("writes logs and buffers debug", async () => {
     let items = [];
     let worker = tasks => {
       items = items.concat(tasks);

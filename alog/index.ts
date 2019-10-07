@@ -2,8 +2,6 @@
 // Use of this source code is governed by a MIT-style license
 // that can be found in the LICENSE file.
 
-import {Queue} from "jsq";
-
 interface Event<T> {
    ts: Date;
    level: "DEBUG" | "INFO" | "ERROR" | "WARN";
@@ -30,7 +28,7 @@ export class Log<T> {
    private q: Queue<Event<T>>;
    private stash: Event<T>[];
    private maxStash: number;
-   
+
    constructor(post: PostItems<T> | Url, bufsize: number = 20) {
        if (typeof post === "string") {
            let url = post;
@@ -82,7 +80,7 @@ export class Log<T> {
       };
       try {
           let res = await fetch(url, init);
-          return res.ok ? count : 0;          
+          return res.ok ? count : 0;
       } catch (ignored) {
           return 0;
       }
@@ -91,6 +89,50 @@ export class Log<T> {
    flush() {
       return this.q.flush();
    }
+}
+
+// Queue is a simple async queue of items
+type Worker<T> = (items: T[]) => Promise<number>
+interface Storage<T> {
+   enqueue(items: T[], item: T): void;
+   dequeue(items: T[], count: number): void;
+}
+
+class Queue<T> {
+  worker: Worker<T>;
+  pending?: Promise<void>;
+  items: T[];
+  storage: Storage<T>;
+
+  constructor(worker: Worker<T>, storage: Storage<T>) {
+    this.worker = worker;
+    this.pending = null;
+    this.items = [];
+    this.storage = storage;
+  }
+
+  push(item: T) {
+    this.items.push(item);
+    this.storage.enqueue(this.items, item);
+    if (this.pending === null) {
+      this.pending = this._send()
+    }
+  }
+
+  async flush() {
+    return this.pending;
+  }
+
+  async _send() {
+    while (this.items.length > 0 ) {
+      let count = await this.worker(this.items); // this must not throw!
+      if (count) {
+        this.items.splice(0, count);
+        this.storage.dequeue(this.items, count);
+      }
+    }
+    this.pending = null;
+  }
 }
 
 // retry does binary exponential backoff
