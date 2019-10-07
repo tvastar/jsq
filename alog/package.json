@@ -22,9 +22,9 @@
     "@types/node": "^12.7.11",
     "chai": "^4.2.0",
     "esm": "^3.2.25",
+    "fake-indexeddb": "^2.1.1",
     "mocha": "^6.2.1",
     "typescript": "^3.6.3"
   },
-  "dependencies": {
-  }
+  "dependencies": {}
 }

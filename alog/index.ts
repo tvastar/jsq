@@ -29,17 +29,24 @@ export class Log<T> {
    private stash: Event<T>[];
    private maxStash: number;
 
-   constructor(post: PostItems<T> | Url, bufsize: number = 20) {
+   constructor(post: PostItems<T> | Url, storage: Storage<Event<T>>, bufSize: number = 20) {
        if (typeof post === "string") {
            let url = post;
            post = items => this._post(url, items);
        }
        post = retry(post, Infinity, 500, 30000, 0.2);
-       this.q = new Queue<Event<T>>(post, new FakeStorage<Event<T>>());
+       this.q = new Queue<Event<T>>(post, storage);
        this.stash = [];
-       this.maxStash = bufsize;
+       this.maxStash = bufSize;
    }
 
+   // push is mainly there for the init use case: stale entries
+   // are pushed with the ability to wait for confirmation that this
+   // was written to storage.
+   push(e: Event<T>) {
+       return this.q.push(e);
+   }
+   
    debug(payload: T) {
        this.stash.push({ts: new Date(), level: "DEBUG", payload: payload});
        while (this.stash.length > this.maxStash) {
@@ -94,7 +101,7 @@ export class Log<T> {
 // Queue is a simple async queue of items
 type Worker<T> = (items: T[]) => Promise<number>
 interface Storage<T> {
-   enqueue(items: T[], item: T): void;
+   enqueue(items: T[], item: T): Promise<void>;
    dequeue(items: T[], count: number): void;
 }
 
@@ -111,12 +118,12 @@ class Queue<T> {
     this.storage = storage;
   }
 
-  push(item: T) {
+  push(item: T) : Promise<void> {
     this.items.push(item);
-    this.storage.enqueue(this.items, item);
     if (this.pending === null) {
       this.pending = this._send()
     }
+    return this.storage.enqueue(this.items, item);
   }
 
   async flush() {
@@ -155,10 +162,128 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-class FakeStorage<T> {
-   enqueue(items: T[], item: T): void {
-   }
+// Store implements an IDB-base multi-tab safe store.
+//
+// Much of the work in this is class is dealing with the fact that a
+// dequeue call can happen before the enqueue call has completed.
+//
+// To make that work, the main state "entries" holds a list
+// of IDs (but not the items themselves which are in indexeddb).
+// The entry is an object which has a deleted flag. If a dequeue
+// operations comes in while the add is still in progress, the flag
+// is set to true and the entry removed.  When the add succeeds,
+// this flag is checked and the item deleted immediately if needed.
+export class Store<T> {
+  private asyncDB: AsyncDB<T>
+  private entries: Array<{id?: number, deleted: boolean}>
+  
+  constructor(idb: IDBFactory, name: string) {
+    this.asyncDB = new AsyncDB<T>(idb, name);
+    this.entries = [];
+  }
 
-   dequeue(items: T[], count: number): void {
-   }
+  waitForInit(): Promise<void> {
+    return this.asyncDB.waitForInit();
+  }
+
+  list(): Promise<T[]> {
+    return this.asyncDB.list();
+  }
+
+  async enqueue(items: T[], item: T): Promise<void> {
+    let entry: {id?: number, deleted: boolean} = {id: null, deleted: false};
+    this.entries.push(entry);
+    entry.id = await this.asyncDB.add(item);
+    if (entry.deleted) {
+       await this.asyncDB.remove(entry.id);
+    }
+  }
+
+  async dequeue(items: T[], count: number): Promise<void> {
+    for (let kk = 0; kk < count; kk ++) {
+       if (this.entries[kk].id == null) {
+         this.entries[kk].deleted = true;
+       } else {
+         // TODO: fix this orphaned promise
+         this.asyncDB.remove(this.entries[kk].id);
+       }
+    }
+    this.entries.splice(0, count);
+  }
+}
+
+// AsyncDB provides a thin wrapper on top of IndexedDB
+//
+// All items are stored as {item, id} where id is an autoincrement
+// column.  The add() call returns the id so things can be removed
+// later.  The list() call fetches all items in the db now.
+class AsyncDB<T> {
+  private db: Promise<IDBDatabase>;
+  public staleEntries: Array<{id: number, item: T}>;
+
+  constructor(idb: IDBFactory, name: string) {
+    this.db = new Promise( (resolve, reject) => {
+       let req = idb.open(name, 1);
+       req.onupgradeneeded = () => {
+         req.result.createObjectStore("logs", {keyPath: "id", autoIncrement: true});
+       };
+       // TODO: the callback below cannot be async as its errors
+       // will be uncaught
+       req.onsuccess = async () => {
+         let db = req.result;
+         db.onerror = e => console.log("Unexpected idb error", e);
+         this.staleEntries = await this._list(db);
+         resolve(db);
+       };
+       req.onerror = reject;
+    });
+  }
+
+  async waitForInit(): Promise<void> {
+     await this.db;
+  }
+  
+  async list(): Promise<T[]> {
+    let entries = await this._list(await this.db);
+    return entries.map(x => x.item);
+  }
+
+  _list(db: IDBDatabase): Promise<Array<{id: number, item: T}>> {
+    return new Promise(async (resolve, reject) => {
+      let tx = db.transaction(["logs"], "readonly");
+      tx.oncomplete = e => {};
+      tx.onerror = reject;
+      let req = tx.objectStore("logs").getAll()
+      req.onerror = reject;
+      req.onsuccess = () => {
+        resolve(req.result);
+      };
+    });
+  }
+  
+  add(item: T): Promise<number> {
+    return new Promise(async (resolve, reject) => {
+      let db = await this.db;
+      let tx = db.transaction(["logs"], "readwrite");
+      tx.onerror = reject;
+      let req = tx.objectStore("logs").add({item: item});
+      req.onsuccess = () => {
+        resolve(+req.result);
+      };
+      req.onerror = reject;
+    });
+  }
+
+  remove(id: number): Promise<void> {
+    return new Promise(async (resolve, reject) => {
+      let db = await this.db;
+      let tx = db.transaction(["logs"], "readwrite");
+      tx.onerror = reject;
+      let req = tx.objectStore("logs").delete(id);
+      req.onsuccess = () => {
+        resolve();
+      };
+      req.onerror = reject;
+    });
+  }
 }

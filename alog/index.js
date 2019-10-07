@@ -51,18 +51,24 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
 // debug messages are sent.  The debug message buffer size can be
 // specified  in second (but optional) argument to the constructor.
 var Log = /** @class */ (function () {
-    function Log(post, bufsize) {
+    function Log(post, storage, bufSize) {
         var _this = this;
-        if (bufsize === void 0) { bufsize = 20; }
+        if (bufSize === void 0) { bufSize = 20; }
         if (typeof post === "string") {
             var url_1 = post;
             post = function (items) { return _this._post(url_1, items); };
         }
         post = retry(post, Infinity, 500, 30000, 0.2);
-        this.q = new Queue(post, new FakeStorage());
+        this.q = new Queue(post, storage);
         this.stash = [];
-        this.maxStash = bufsize;
+        this.maxStash = bufSize;
     }
+    // push is mainly there for the init use case: stale entries
+    // are pushed with the ability to wait for confirmation that this
+    // was written to storage.
+    Log.prototype.push = function (e) {
+        return this.q.push(e);
+    };
     Log.prototype.debug = function (payload) {
         this.stash.push({ ts: new Date(), level: "DEBUG", payload: payload });
         while (this.stash.length > this.maxStash) {
@@ -129,10 +135,10 @@ var Queue = /** @class */ (function () {
     }
     Queue.prototype.push = function (item) {
         this.items.push(item);
-        this.storage.enqueue(this.items, item);
         if (this.pending === null) {
             this.pending = this._send();
         }
+        return this.storage.enqueue(this.items, item);
     };
     Queue.prototype.flush = function () {
         return __awaiter(this, void 0, void 0, function () {
@@ -202,12 +208,191 @@ function retry(fn, maxCount, initialMilliseconds, maxMilliseconds, randomization
 function sleep(ms) {
     return new Promise(function (resolve) { return setTimeout(resolve, ms); });
 }
-var FakeStorage = /** @class */ (function () {
-    function FakeStorage() {
+// Store implements an IDB-base multi-tab safe store.
+//
+// Much of the work in this is class is dealing with the fact that a
+// dequeue call can happen before the enqueue call has completed.
+//
+// To make that work, the main state "entries" holds a list
+// of IDs (but not the items themselves which are in indexeddb).
+// The entry is an object which has a deleted flag. If a dequeue
+// operations comes in while the add is still in progress, the flag
+// is set to true and the entry removed.  When the add succeeds,
+// this flag is checked and the item deleted immediately if needed.
+var Store = /** @class */ (function () {
+    function Store(idb, name) {
+        this.asyncDB = new AsyncDB(idb, name);
+        this.entries = [];
     }
-    FakeStorage.prototype.enqueue = function (items, item) {
+    Store.prototype.waitForInit = function () {
+        return this.asyncDB.waitForInit();
     };
-    FakeStorage.prototype.dequeue = function (items, count) {
+    Store.prototype.list = function () {
+        return this.asyncDB.list();
     };
-    return FakeStorage;
+    Store.prototype.enqueue = function (items, item) {
+        return __awaiter(this, void 0, void 0, function () {
+            var entry, _a;
+            return __generator(this, function (_b) {
+                switch (_b.label) {
+                    case 0:
+                        entry = { id: null, deleted: false };
+                        this.entries.push(entry);
+                        _a = entry;
+                        return [4 /*yield*/, this.asyncDB.add(item)];
+                    case 1:
+                        _a.id = _b.sent();
+                        if (!entry.deleted) return [3 /*break*/, 3];
+                        return [4 /*yield*/, this.asyncDB.remove(entry.id)];
+                    case 2:
+                        _b.sent();
+                        _b.label = 3;
+                    case 3: return [2 /*return*/];
+                }
+            });
+        });
+    };
+    Store.prototype.dequeue = function (items, count) {
+        return __awaiter(this, void 0, void 0, function () {
+            var kk;
+            return __generator(this, function (_a) {
+                for (kk = 0; kk < count; kk++) {
+                    if (this.entries[kk].id == null) {
+                        this.entries[kk].deleted = true;
+                    }
+                    else {
+                        // TODO: fix this orphaned promise
+                        this.asyncDB.remove(this.entries[kk].id);
+                    }
+                }
+                this.entries.splice(0, count);
+                return [2 /*return*/];
+            });
+        });
+    };
+    return Store;
+}());
+export { Store };
+// AsyncDB provides a thin wrapper on top of IndexedDB
+//
+// All items are stored as {item, id} where id is an autoincrement
+// column.  The add() call returns the id so things can be removed
+// later.  The list() call fetches all items in the db now.
+var AsyncDB = /** @class */ (function () {
+    function AsyncDB(idb, name) {
+        var _this = this;
+        this.db = new Promise(function (resolve, reject) {
+            var req = idb.open(name, 1);
+            req.onupgradeneeded = function () {
+                req.result.createObjectStore("logs", { keyPath: "id", autoIncrement: true });
+            };
+            // TODO: the callback below cannot be async as its errors
+            // will be uncaught
+            req.onsuccess = function () { return __awaiter(_this, void 0, void 0, function () {
+                var db, _a;
+                return __generator(this, function (_b) {
+                    switch (_b.label) {
+                        case 0:
+                            db = req.result;
+                            db.onerror = function (e) { return console.log("Unexpected idb error", e); };
+                            _a = this;
+                            return [4 /*yield*/, this._list(db)];
+                        case 1:
+                            _a.staleEntries = _b.sent();
+                            resolve(db);
+                            return [2 /*return*/];
+                    }
+                });
+            }); };
+            req.onerror = reject;
+        });
+    }
+    AsyncDB.prototype.waitForInit = function () {
+        return __awaiter(this, void 0, void 0, function () {
+            return __generator(this, function (_a) {
+                switch (_a.label) {
+                    case 0: return [4 /*yield*/, this.db];
+                    case 1:
+                        _a.sent();
+                        return [2 /*return*/];
+                }
+            });
+        });
+    };
+    AsyncDB.prototype.list = function () {
+        return __awaiter(this, void 0, void 0, function () {
+            var entries, _a;
+            return __generator(this, function (_b) {
+                switch (_b.label) {
+                    case 0:
+                        _a = this._list;
+                        return [4 /*yield*/, this.db];
+                    case 1: return [4 /*yield*/, _a.apply(this, [_b.sent()])];
+                    case 2:
+                        entries = _b.sent();
+                        return [2 /*return*/, entries.map(function (x) { return x.item; })];
+                }
+            });
+        });
+    };
+    AsyncDB.prototype._list = function (db) {
+        var _this = this;
+        return new Promise(function (resolve, reject) { return __awaiter(_this, void 0, void 0, function () {
+            var tx, req;
+            return __generator(this, function (_a) {
+                tx = db.transaction(["logs"], "readonly");
+                tx.oncomplete = function (e) { };
+                tx.onerror = reject;
+                req = tx.objectStore("logs").getAll();
+                req.onerror = reject;
+                req.onsuccess = function () {
+                    resolve(req.result);
+                };
+                return [2 /*return*/];
+            });
+        }); });
+    };
+    AsyncDB.prototype.add = function (item) {
+        var _this = this;
+        return new Promise(function (resolve, reject) { return __awaiter(_this, void 0, void 0, function () {
+            var db, tx, req;
+            return __generator(this, function (_a) {
+                switch (_a.label) {
+                    case 0: return [4 /*yield*/, this.db];
+                    case 1:
+                        db = _a.sent();
+                        tx = db.transaction(["logs"], "readwrite");
+                        tx.onerror = reject;
+                        req = tx.objectStore("logs").add({ item: item });
+                        req.onsuccess = function () {
+                            resolve(+req.result);
+                        };
+                        req.onerror = reject;
+                        return [2 /*return*/];
+                }
+            });
+        }); });
+    };
+    AsyncDB.prototype.remove = function (id) {
+        var _this = this;
+        return new Promise(function (resolve, reject) { return __awaiter(_this, void 0, void 0, function () {
+            var db, tx, req;
+            return __generator(this, function (_a) {
+                switch (_a.label) {
+                    case 0: return [4 /*yield*/, this.db];
+                    case 1:
+                        db = _a.sent();
+                        tx = db.transaction(["logs"], "readwrite");
+                        tx.onerror = reject;
+                        req = tx.objectStore("logs")["delete"](id);
+                        req.onsuccess = function () {
+                            resolve();
+                        };
+                        req.onerror = reject;
+                        return [2 /*return*/];
+                }
+            });
+        }); });
+    };
+    return AsyncDB;
 }());

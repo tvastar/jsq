@@ -5,8 +5,21 @@ The alog module implements asynchronous logging.
 ## API
 
 ```js
-   let log = new Log("/log"); // post all messaages to /log
+   let store = new Store(window.indexedDB, "myapplogs");
+   let log = new Log("/log", store); // post all messaages to /log
 
+   // on app init, do the following
+   await storage.waitForInit()
+   for (let entry of storage.staleEntries) {
+      await log.push(entry.item);
+      storage.remove(entry.id);
+   }
+   // the above takes care of resubmitting old entries
+
+   // now log can be used for debug/info/warn etc
+   // debug entries will be buffered and only sent out when a
+   // WARN or ERROR level event happens
+   
    log.debug({x: 42});
    log.info({x: 41});
    log.warn({x: 99});
@@ -23,5 +36,22 @@ to the constructor of the log.
 
 ## Retries and persistence
 
-Binary exponential backoff is already wired in.  Persistence is NYI.
+Binary exponential backoff is automatically applied.  The package
+comes with a `Store` class which implements persistence on IndexedDB
+that works even when multiple tabs are active.
+
+## XHR
+
+The default implementation uses the fetch API, posting payloads like
+the following to the url provided to `Log`:
+
+```jsonn
+{
+   "now": "current date time",
+   "events": [
+      {"ts": "timestamp", "level": "INFO", "payload": ...},
+      ...
+   ]
+}
+```
 
