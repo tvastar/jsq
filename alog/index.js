@@ -284,7 +284,10 @@ var AsyncDB = /** @class */ (function () {
         this.db = new Promise(function (resolve, reject) {
             var req = idb.open(name, 1);
             req.onupgradeneeded = function () {
-                req.result.createObjectStore("logs", { keyPath: "id", autoIncrement: true });
+                req.result.createObjectStore("logs", {
+                    keyPath: "id",
+                    autoIncrement: true
+                });
             };
             // TODO: the callback below cannot be async as its errors
             // will be uncaught
